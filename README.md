@@ -41,6 +41,9 @@ npx wrangler secret put ANTHROPIC_API_KEY
 npx wrangler secret put TMDB_API_KEY
 ```
 - The container sleeps after 30 min without requests. The first visit after that takes ~20 s to wake it up.
+- Each deploy gets a fresh container instance (named after the Worker version), so changes are live on the next
+  request. A job that is running while you deploy is lost (the old instance just sleeps). Saved lists are unaffected.
+- API keys are checked before the upload starts (`POST /api/check-keys`), so a bad key fails in about a second.
 - Uploads go through the Worker, which caps request bodies at 100 MB (the app allows 95 MB). A 1 h mp3 at 128 kbps is ~57 MB.
 - The Whisper model is baked into the image (`--build-arg WHISPER_MODEL=small` for a smaller, faster one).
 

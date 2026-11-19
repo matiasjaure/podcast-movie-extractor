@@ -124,6 +124,18 @@ def extract_movies(transcript: str, progress=lambda msg: None, api_key: str | No
     return list(found.values())
 
 
+def check_anthropic_key(api_key: str | None = None) -> None:
+    """Free request that fails fast (401/403/404) if the key can't use EXTRACT_MODEL."""
+    import anthropic
+
+    anthropic.Anthropic(api_key=api_key, max_retries=0, timeout=15).models.retrieve(EXTRACT_MODEL)
+
+
+def check_tmdb_key(key: str) -> None:
+    """Raises urllib.error.HTTPError(401) for an invalid TMDB key or token."""
+    Tmdb(key).get("/authentication")
+
+
 # ----------------------------------------------------------------- TMDB
 class Tmdb:
     BASE = "https://api.themoviedb.org/3"

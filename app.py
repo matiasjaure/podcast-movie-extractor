@@ -44,7 +44,11 @@ def friendly_error(e: Exception) -> str:
 
     if isinstance(e, anthropic.AuthenticationError):
         return ("Anthropic rechazó la clave (401). Usa una API key de console.anthropic.com → API Keys "
-                "(empieza por «sk-ant-api»), sin espacios. La transcripción quedó guardada: reintentar es rápido.")
+                "(empieza por «sk-ant-api»), sin espacios.")
+    if isinstance(e, anthropic.NotFoundError):
+        return f"La clave de Anthropic no tiene acceso al modelo {pm.EXTRACT_MODEL} (404)."
+    if isinstance(e, anthropic.APIConnectionError):
+        return "No se pudo conectar con Anthropic. Inténtalo de nuevo."
     if isinstance(e, anthropic.PermissionDeniedError):
         return "La clave de Anthropic no tiene permiso para usar este modelo (403)."
     if isinstance(e, anthropic.APIStatusError):
@@ -86,6 +90,31 @@ def check_keys(anthropic_key: str | None, tmdb_key: str | None) -> str | None:
     return None
 
 
+def form_keys() -> tuple[dict, str | None]:
+    """Keys typed in the form (this request only; never written to os.environ), plus a
+    validation error. The keys are checked against both APIs so a bad one fails in
+    seconds instead of after a long transcription."""
+    keys = {"anthropic_key": request.form.get("anthropic_api_key", "").strip() or None,
+            "tmdb_key": request.form.get("tmdb_api_key", "").strip() or None}
+    for env, k in (("ANTHROPIC_API_KEY", "anthropic_key"), ("TMDB_API_KEY", "tmdb_key")):
+        if not (keys[k] or os.environ.get(env)):
+            return keys, f"Falta {env} (en el servidor o en el formulario)"
+    if err := check_keys(**keys):
+        return keys, err
+    try:
+        pm.check_anthropic_key(keys["anthropic_key"])
+        pm.check_tmdb_key(keys["tmdb_key"] or os.environ["TMDB_API_KEY"])
+    except Exception as e:
+        return keys, friendly_error(e)
+    return keys, None
+
+
+@app.post("/api/check-keys")
+def check_keys_route():
+    _, err = form_keys()
+    return (jsonify(error=err), 400) if err else jsonify(ok=True)
+
+
 @app.post("/api/jobs")
 def create_job():
     f = request.files.get("file")
@@ -94,14 +123,9 @@ def create_job():
     name = secure_filename(f.filename) or "episodio.mp3"
     if Path(name).suffix.lower() not in AUDIO_EXT:
         return jsonify(error="Formato no soportado. Sube un .mp3, .m4a, .wav… o un .txt"), 400
-    # Keys typed in the form apply to this job only; never written to os.environ.
-    keys = {"anthropic_key": request.form.get("anthropic_api_key", "").strip() or None,
-            "tmdb_key": request.form.get("tmdb_api_key", "").strip() or None}
-    if err := check_keys(**keys):
+    keys, err = form_keys()
+    if err:
         return jsonify(error=err), 400
-    for env, k in (("ANTHROPIC_API_KEY", "anthropic_key"), ("TMDB_API_KEY", "tmdb_key")):
-        if not (keys[k] or os.environ.get(env)):
-            return jsonify(error=f"Falta {env} (en el servidor o en el formulario)"), 400
     model = request.form.get("model") if request.form.get("model") in MODELS else DEFAULT_MODEL
     job_id = uuid.uuid4().hex
     dest = ROOT / job_id
@@ -135,6 +159,7 @@ def too_large(_):
 @app.get("/healthz")
 def healthz():
     return "ok"
+
 
 
 @app.get("/api/config")

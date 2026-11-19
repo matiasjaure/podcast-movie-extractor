@@ -48,6 +48,8 @@ class AppTest(unittest.TestCase):
         pm.extract_movies = lambda t, progress=None, api_key=None: [
             {"title_original": "Spirited Away", "title_mentioned": "Chihiro", "year": 2001, "context": "c"}]
         pm.Tmdb = FakeTmdb
+        pm.check_anthropic_key = lambda key=None: None
+        pm.check_tmdb_key = lambda key: None
         self.client = web.app.test_client()
 
     def test_parse_json_array(self):
@@ -136,6 +138,37 @@ class AppTest(unittest.TestCase):
                                                     "anthropic_api_key": ak, "tmdb_api_key": tk})
             self.assertEqual(r.status_code, 400)
             self.assertIn("cambiadas", r.get_json()["error"])
+
+    def test_bad_key_fails_before_job_starts(self):
+        import urllib.error
+        import anthropic
+        import httpx2 as httpx
+
+        def bad_anthropic(key=None):
+            req = httpx.Request("GET", "https://api.anthropic.com/v1/models/x")
+            raise anthropic.AuthenticationError("bad", response=httpx.Response(401, request=req), body=None)
+
+        def bad_tmdb(key):
+            raise urllib.error.HTTPError("https://api.themoviedb.org/3/authentication", 401, "no", {}, None)
+
+        transcribed = []
+        pm.transcribe = lambda *a, **k: transcribed.append(1) or ""
+        pm.check_anthropic_key = bad_anthropic
+        r = self.client.post("/api/check-keys", data={"anthropic_api_key": "sk-ant-api03-bad"})
+        self.assertEqual(r.status_code, 400)
+        self.assertIn("Anthropic rechazó", r.get_json()["error"])
+        r = self.client.post("/api/jobs", data={"file": (io.BytesIO(b"x"), "ep.mp3")})
+        self.assertEqual(r.status_code, 400)
+
+        pm.check_anthropic_key = lambda key=None: None
+        pm.check_tmdb_key = bad_tmdb
+        r = self.client.post("/api/check-keys", data={})
+        self.assertEqual(r.status_code, 400)
+        self.assertIn("TMDB rechazó", r.get_json()["error"])
+        self.assertEqual(transcribed, [])
+
+        pm.check_tmdb_key = lambda key: None
+        self.assertEqual(self.client.post("/api/check-keys", data={}).get_json(), {"ok": True})
 
     def test_friendly_auth_error(self):
         import anthropic

@@ -4,9 +4,9 @@
  * - static/index.html is bundled in (a Text module, see wrangler.jsonc "rules") and served at "/".
  * - /api/config and /api/lists* are answered here, from the Durable Object's
  *   SQLite storage, so saved lists persist and browsing them never wakes the container.
- * - Everything else (/api/jobs, /files) goes to a single container instance
- *   running the Flask app (see ../Dockerfile). One instance on purpose: jobs
- *   live in that process's memory and run one at a time.
+ * - Everything else (/api/jobs, /files, /api/check-keys) goes to a single container
+ *   instance per deployed version, running the Flask app (see ../Dockerfile). One
+ *   instance on purpose: jobs live in that process's memory and run one at a time.
  *
  * The lists API mirrors the Flask implementation in ../app.py (used locally).
  */
@@ -15,6 +15,7 @@ import PAGE from "../static/index.html";
 
 interface Env {
   APP: DurableObjectNamespace<App>;
+  CF_VERSION_METADATA: WorkerVersionMetadata;
   // Optional secrets (`wrangler secret put …`). Without them, visitors enter their own keys in the form.
   ANTHROPIC_API_KEY?: string;
   TMDB_API_KEY?: string;
@@ -174,6 +175,12 @@ export default {
     const { pathname } = new URL(request.url);
     if (request.method === "GET" && (pathname === "/" || pathname === "/index.html"))
       return new Response(PAGE, { headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-cache" } });
-    return env.APP.getByName("main").fetch(request);
+    // Saved lists live in the "main" object's storage. The container runs in an object
+    // named after the deployed version: a running container keeps its old image until
+    // it goes idle, so this makes each deploy take effect on the next request. The
+    // previous version's instance gets no more traffic and sleeps after IDLE_MS.
+    const lists = pathname.startsWith("/api/lists") || pathname === "/api/config";
+    const name = lists ? "main" : `app-${env.CF_VERSION_METADATA.id}`;
+    return env.APP.getByName(name).fetch(request);
   },
 } satisfies ExportedHandler<Env>;
