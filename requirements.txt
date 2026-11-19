@@ -1,0 +1,5 @@
+faster-whisper>=1.0.3
+av>=12,<19  # av 19 removed an argument faster-whisper 1.2.1 passes (breaks mp3 decoding)
+anthropic>=0.40.0
+flask>=3.0
+gunicorn>=22.0
