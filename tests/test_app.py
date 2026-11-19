@@ -130,6 +130,32 @@ class AppTest(unittest.TestCase):
         finally:
             anthropic.Anthropic = real_client
 
+    def test_rejects_swapped_keys(self):
+        for ak, tk in (("eyJhbGciOi.tmdb", "x"), ("sk-ant-api03-x", "sk-ant-api03-abc")):
+            r = self.client.post("/api/jobs", data={"file": (io.BytesIO(b"x"), "ep.mp3"),
+                                                    "anthropic_api_key": ak, "tmdb_api_key": tk})
+            self.assertEqual(r.status_code, 400)
+            self.assertIn("cambiadas", r.get_json()["error"])
+
+    def test_friendly_auth_error(self):
+        import anthropic
+        import httpx2 as httpx
+        req = httpx.Request("POST", "https://api.anthropic.com/v1/messages")
+        err = anthropic.AuthenticationError("bad", response=httpx.Response(401, request=req), body=None)
+        self.assertIn("console.anthropic.com", web.friendly_error(err))
+
+    def test_retry_reuses_transcript(self):
+        calls = []
+        pm.transcribe = lambda audio, model, progress=None: calls.append(1) or "hablamos de Chihiro"
+        audio = b"same audio bytes for cache test"
+        for _ in range(2):
+            job_id = self.client.post("/api/jobs", data={"file": (io.BytesIO(audio), "ep.mp3")}).get_json()["id"]
+            for _ in range(50):
+                if self.client.get(f"/api/jobs/{job_id}").get_json()["state"] != "running":
+                    break
+                time.sleep(0.1)
+        self.assertEqual(len(calls), 1)
+
     def test_config(self):
         self.assertEqual(self.client.get("/api/config").get_json(), {"keys_on_server": True})
 

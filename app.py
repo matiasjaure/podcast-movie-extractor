@@ -6,7 +6,10 @@ Production: gunicorn -w 1 --threads 8 -t 0 -b 0.0.0.0:$PORT app:app   (see Docke
 """
 from __future__ import annotations
 
+import hashlib
 import json
+import shutil
+import urllib.error
 from contextlib import contextmanager
 import os
 import sqlite3
@@ -33,16 +36,54 @@ jobs: dict[str, dict] = {}
 run_lock = threading.Lock()  # one pipeline at a time: Whisper is CPU/RAM heavy
 
 
-def worker(job_id: str, source: Path, model: str, keys: dict):
+TRANSCRIPTS = ROOT / "transcripts"  # cache: retrying the same audio skips Whisper
+
+
+def friendly_error(e: Exception) -> str:
+    import anthropic
+
+    if isinstance(e, anthropic.AuthenticationError):
+        return ("Anthropic rechazó la clave (401). Usa una API key de console.anthropic.com → API Keys "
+                "(empieza por «sk-ant-api»), sin espacios. La transcripción quedó guardada: reintentar es rápido.")
+    if isinstance(e, anthropic.PermissionDeniedError):
+        return "La clave de Anthropic no tiene permiso para usar este modelo (403)."
+    if isinstance(e, anthropic.APIStatusError):
+        return f"Error de Anthropic ({e.status_code}): {e.message}"
+    if isinstance(e, urllib.error.HTTPError) and "themoviedb" in (e.url or ""):
+        if e.code == 401:
+            return ("TMDB rechazó la clave (401). Usa la «API Key» o el «API Read Access Token» "
+                    "de themoviedb.org → Ajustes → API.")
+        return f"Error de TMDB ({e.code})."
+    return f"{type(e).__name__}: {e}"
+
+
+def worker(job_id: str, source: Path, model: str, keys: dict, cached: Path):
     job = jobs[job_id]
+    out = ROOT / job_id
     try:
         if run_lock.locked():
             job.update(status="En cola, esperando a que termine otro audio…")
         with run_lock:
-            movies = pm.run_pipeline(source, ROOT / job_id, model, lambda m: job.update(status=m), **keys)
+            if cached.exists():
+                shutil.copy(cached, out / "transcript.txt")  # run_pipeline reuses it
+            movies = pm.run_pipeline(source, out, model, lambda m: job.update(status=m), **keys)
         job.update(state="done", status="Listo", movies=[m.to_dict() for m in movies])
     except Exception as e:  # surface any failure in the UI
-        job.update(state="error", status=f"{type(e).__name__}: {e}")
+        job.update(state="error", status=friendly_error(e))
+    finally:
+        if (out / "transcript.txt").exists() and not cached.exists():
+            TRANSCRIPTS.mkdir(parents=True, exist_ok=True)
+            shutil.copy(out / "transcript.txt", cached)
+
+
+def check_keys(anthropic_key: str | None, tmdb_key: str | None) -> str | None:
+    """Catch keys pasted into the wrong field before spending a transcription on them."""
+    if anthropic_key and not anthropic_key.startswith("sk-ant-"):
+        hint = " Parece un token de TMDB: ¿están las claves cambiadas?" if anthropic_key.startswith("eyJ") else ""
+        return "La clave de Anthropic debe empezar por «sk-ant-»." + hint
+    if tmdb_key and tmdb_key.startswith("sk-ant-"):
+        return "En el campo de TMDB hay una clave de Anthropic: ¿están las claves cambiadas?"
+    return None
 
 
 @app.post("/api/jobs")
@@ -54,8 +95,10 @@ def create_job():
     if Path(name).suffix.lower() not in AUDIO_EXT:
         return jsonify(error="Formato no soportado. Sube un .mp3, .m4a, .wav… o un .txt"), 400
     # Keys typed in the form apply to this job only; never written to os.environ.
-    keys = {"anthropic_key": request.form.get("anthropic_api_key") or None,
-            "tmdb_key": request.form.get("tmdb_api_key") or None}
+    keys = {"anthropic_key": request.form.get("anthropic_api_key", "").strip() or None,
+            "tmdb_key": request.form.get("tmdb_api_key", "").strip() or None}
+    if err := check_keys(**keys):
+        return jsonify(error=err), 400
     for env, k in (("ANTHROPIC_API_KEY", "anthropic_key"), ("TMDB_API_KEY", "tmdb_key")):
         if not (keys[k] or os.environ.get(env)):
             return jsonify(error=f"Falta {env} (en el servidor o en el formulario)"), 400
@@ -65,8 +108,10 @@ def create_job():
     dest.mkdir(parents=True)
     source = dest / name
     f.save(source)
+    digest = hashlib.sha256(source.read_bytes()).hexdigest()[:32]
+    cached = TRANSCRIPTS / f"{digest}-{model}.txt"
     jobs[job_id] = {"state": "running", "status": "Empezando…", "name": Path(name).stem}
-    threading.Thread(target=worker, args=(job_id, source, model, keys), daemon=True).start()
+    threading.Thread(target=worker, args=(job_id, source, model, keys, cached), daemon=True).start()
     return jsonify(id=job_id)
 
 

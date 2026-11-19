@@ -78,8 +78,10 @@ h2{font-size:18px;margin:4px 0 12px}
       <option value="large-v3">large-v3 (más preciso, lento)</option>
     </select>
     <details id="keys"><summary>Claves API</summary>
-      <label for="ak">ANTHROPIC_API_KEY</label><input type="password" id="ak" name="anthropic_api_key" autocomplete="off">
-      <label for="tk">TMDB_API_KEY</label><input type="password" id="tk" name="tmdb_api_key" autocomplete="off">
+      <label for="ak">Anthropic API key <span class="small">(console.anthropic.com → API Keys, empieza por «sk-ant-api»)</span></label>
+      <input type="password" id="ak" name="anthropic_api_key" autocomplete="off" placeholder="sk-ant-api03-…">
+      <label for="tk">TMDB <span class="small">(themoviedb.org → Ajustes → API: «API Key» o «API Read Access Token»)</span></label>
+      <input type="password" id="tk" name="tmdb_api_key" autocomplete="off" placeholder="eyJ… o 32 caracteres">
     </details>
     <p class="row"><button id="go">Procesar</button> <span id="st" class="mute"></span></p>
   </form>
