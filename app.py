@@ -6,10 +6,13 @@ Production: gunicorn -w 1 --threads 8 -t 0 -b 0.0.0.0:$PORT app:app   (see Docke
 """
 from __future__ import annotations
 
+import json
+from contextlib import contextmanager
 import os
+import sqlite3
 import threading
 import uuid
-from dataclasses import asdict
+from datetime import datetime, timezone
 from pathlib import Path
 
 from flask import Flask, jsonify, request, send_from_directory
@@ -17,7 +20,9 @@ from werkzeug.utils import secure_filename
 
 import podcast_movies as pm
 
-ROOT = Path(__file__).parent / "out"
+HERE = Path(__file__).parent
+ROOT = HERE / "out"
+DATA_DIR = Path(os.environ.get("DATA_DIR", HERE / "data"))
 AUDIO_EXT = {".mp3", ".m4a", ".wav", ".ogg", ".opus", ".flac", ".aac", ".webm", ".mp4", ".txt"}
 MODELS = {"tiny", "base", "small", "medium", "large-v3"}
 DEFAULT_MODEL = os.environ.get("WHISPER_MODEL", "medium")
@@ -35,7 +40,7 @@ def worker(job_id: str, source: Path, model: str, keys: dict):
             job.update(status="En cola, esperando a que termine otro audio…")
         with run_lock:
             movies = pm.run_pipeline(source, ROOT / job_id, model, lambda m: job.update(status=m), **keys)
-        job.update(state="done", status="Listo", movies=[asdict(m) | {"imdb_url": m.imdb_url, "letterboxd_url": m.letterboxd_url} for m in movies])
+        job.update(state="done", status="Listo", movies=[m.to_dict() for m in movies])
     except Exception as e:  # surface any failure in the UI
         job.update(state="error", status=f"{type(e).__name__}: {e}")
 
@@ -87,69 +92,123 @@ def healthz():
     return "ok"
 
 
+@app.get("/api/config")
+def config():
+    return jsonify(keys_on_server=bool(os.environ.get("ANTHROPIC_API_KEY") and os.environ.get("TMDB_API_KEY")))
+
+
+# ----------------------------------------------------------------- saved lists
+# Same contract as worker/index.ts, which serves these routes on Cloudflare
+# (there the container's disk is ephemeral, so lists live in the Durable Object).
+MAX_NAME, MAX_MOVIES, MAX_BYTES = 120, 1000, 2_000_000
+db_lock = threading.Lock()
+
+
+@contextmanager
+def db():
+    """Serialized connection that commits on success and always closes."""
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    with db_lock:
+        conn = sqlite3.connect(DATA_DIR / "lists.db")
+        try:
+            conn.row_factory = sqlite3.Row
+            conn.execute("""CREATE TABLE IF NOT EXISTS lists (
+                id TEXT PRIMARY KEY, name TEXT NOT NULL, source TEXT NOT NULL DEFAULT '',
+                movies TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)""")
+            with conn:
+                yield conn
+        finally:
+            conn.close()
+
+
+def now() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+
+
+def validate(body, partial: bool):
+    """Returns (fields, error)."""
+    if not isinstance(body, dict):
+        return None, "JSON inválido"
+    out = {}
+    if "name" in body or not partial:
+        name = body.get("name")
+        if not isinstance(name, str) or not name.strip() or len(name) > MAX_NAME:
+            return None, f"El nombre es obligatorio (máx. {MAX_NAME} caracteres)"
+        out["name"] = name.strip()
+    if "source" in body:
+        out["source"] = str(body.get("source") or "")[:MAX_NAME]
+    if "movies" in body or not partial:
+        movies = body.get("movies")
+        if not isinstance(movies, list) or len(movies) > MAX_MOVIES or not all(isinstance(m, dict) for m in movies):
+            return None, f"«movies» debe ser una lista de hasta {MAX_MOVIES} películas"
+        out["movies"] = json.dumps(movies, ensure_ascii=False)
+        if len(out["movies"]) > MAX_BYTES:
+            return None, "Lista demasiado grande"
+    return out, None
+
+
+def list_summary(row) -> dict:
+    movies = json.loads(row["movies"])
+    return {"id": row["id"], "name": row["name"], "source": row["source"], "created_at": row["created_at"],
+            "updated_at": row["updated_at"], "count": sum(1 for m in movies if m.get("matched") is not False),
+            "posters": [m["poster_url"] for m in movies if m.get("poster_url")][:4]}
+
+
+@app.get("/api/lists")
+def lists_index():
+    with db() as conn:
+        rows = conn.execute("SELECT * FROM lists ORDER BY updated_at DESC").fetchall()
+    return jsonify(lists=[list_summary(r) for r in rows])
+
+
+@app.post("/api/lists")
+def lists_create():
+    fields, err = validate(request.get_json(silent=True), partial=False)
+    if err:
+        return jsonify(error=err), 400
+    list_id, ts = uuid.uuid4().hex, now()
+    with db() as conn:
+        conn.execute("INSERT INTO lists (id, name, source, movies, created_at, updated_at) VALUES (?,?,?,?,?,?)",
+                     (list_id, fields["name"], fields.get("source", ""), fields["movies"], ts, ts))
+    return jsonify(id=list_id), 201
+
+
+@app.get("/api/lists/<list_id>")
+def lists_get(list_id):
+    with db() as conn:
+        row = conn.execute("SELECT * FROM lists WHERE id = ?", (list_id,)).fetchone()
+    if not row:
+        return jsonify(error="Lista no encontrada"), 404
+    return jsonify({k: row[k] for k in ("id", "name", "source", "created_at", "updated_at")} | {"movies": json.loads(row["movies"])})
+
+
+@app.put("/api/lists/<list_id>")
+def lists_update(list_id):
+    fields, err = validate(request.get_json(silent=True), partial=True)
+    if err:
+        return jsonify(error=err), 400
+    fields["updated_at"] = now()
+    with db() as conn:
+        cur = conn.execute(f"UPDATE lists SET {', '.join(f'{k} = ?' for k in fields)} WHERE id = ?",
+                           (*fields.values(), list_id))
+    if not cur.rowcount:
+        return jsonify(error="Lista no encontrada"), 404
+    return jsonify(ok=True)
+
+
+@app.delete("/api/lists/<list_id>")
+def lists_delete(list_id):
+    with db() as conn:
+        cur = conn.execute("DELETE FROM lists WHERE id = ?", (list_id,))
+    if not cur.rowcount:
+        return jsonify(error="Lista no encontrada"), 404
+    return jsonify(ok=True)
+
+
 @app.get("/")
 def index():
-    keys_on_server = bool(os.environ.get("ANTHROPIC_API_KEY") and os.environ.get("TMDB_API_KEY"))
-    return PAGE.replace("__KEYS_HIDDEN__", "hidden" if keys_on_server else "open")
+    return send_from_directory(HERE / "static", "index.html")
 
-
-PAGE = """<!doctype html><html lang="es"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Podcast → Películas</title>
-<style>
-:root{--bg:#14181c;--card:#1f252b;--fg:#e8ecef;--mute:#8a96a0;--acc:#00c030;--imdb:#f5c518}
-@media(prefers-color-scheme:light){:root{--bg:#f4f5f7;--card:#fff;--fg:#1a1d21;--mute:#667}}
-*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:16px system-ui,sans-serif}
-main{max-width:860px;margin:0 auto;padding:24px 16px}h1{margin:0 0 4px}p.sub{color:var(--mute);margin:0 0 20px}
-.card{background:var(--card);border-radius:12px;padding:20px;margin-bottom:20px}
-.drop{border:2px dashed var(--mute);border-radius:10px;padding:28px;text-align:center;cursor:pointer}
-.drop.over{border-color:var(--acc)}label{display:block;margin:12px 0 4px;color:var(--mute);font-size:14px}
-input[type=text],input[type=password],select{width:100%;padding:8px;border-radius:6px;border:1px solid var(--mute);background:transparent;color:inherit}
-button,.btn{background:var(--acc);color:#000;border:0;border-radius:8px;padding:10px 18px;font-weight:600;cursor:pointer;text-decoration:none;display:inline-block}
-button:disabled{opacity:.5}details{margin-top:12px;color:var(--mute)}
-table{width:100%;border-collapse:collapse}td,th{text-align:left;padding:8px 6px;border-bottom:1px solid #8884}
-a{color:var(--acc)}a.imdb{color:var(--imdb)}.actions{display:flex;gap:10px;flex-wrap:wrap;margin:14px 0}
-.btn.alt{background:transparent;color:var(--fg);border:1px solid var(--mute)}.err{color:#ff6b6b}.mute{color:var(--mute)}
-@media(max-width:600px){.hide-s{display:none}}
-</style>
-<main>
-<h1>🎬 Podcast → Películas</h1><p class="sub">Sube un .mp3 o .m4a en español y obtén las películas mencionadas con enlaces a IMDb y Letterboxd.</p>
-<form id="f" class="card">
- <div class="drop" id="drop">Arrastra el audio aquí o haz clic<br><span class="mute" id="fname"></span>
- <input type="file" id="file" name="file" accept=".mp3,.m4a,.wav,.ogg,.flac,audio/*,.txt" hidden></div>
- <label>Modelo de transcripción</label>
- <select name="model"><option value="small">small (rápido)</option><option value="medium" selected>medium (recomendado)</option><option value="large-v3">large-v3 (más preciso, lento)</option></select>
- <details __KEYS_HIDDEN__><summary>Claves API</summary>
-  <label>ANTHROPIC_API_KEY</label><input type="password" name="anthropic_api_key" autocomplete="off">
-  <label>TMDB_API_KEY</label><input type="password" name="tmdb_api_key" autocomplete="off"></details>
- <p><button id="go">Procesar</button> <span id="st" class="mute"></span></p>
-</form>
-<section id="res"></section>
-</main>
-<script>
-const $=id=>document.getElementById(id),esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
-$('drop').onclick=()=>$('file').click();
-$('file').onchange=()=>$('fname').textContent=$('file').files[0]?.name||'';
-['dragover','dragleave','drop'].forEach(e=>$('drop').addEventListener(e,ev=>{ev.preventDefault();$('drop').classList.toggle('over',e=='dragover');
- if(e=='drop'){$('file').files=ev.dataTransfer.files;$('file').onchange()}}));
-$('f').onsubmit=async ev=>{ev.preventDefault();$('res').innerHTML='';$('go').disabled=true;$('st').className='mute';$('st').textContent='Subiendo…';
- const r=await fetch('/api/jobs',{method:'POST',body:new FormData($('f'))});const j=await r.json();
- if(!r.ok){$('st').className='err';$('st').textContent=j.error;$('go').disabled=false;return}
- const t=setInterval(async()=>{const s=await (await fetch('/api/jobs/'+j.id)).json();$('st').textContent=s.status;
-  if(s.state=='done'){clearInterval(t);$('go').disabled=false;show(j.id,s)}
-  if(s.state=='error'){clearInterval(t);$('go').disabled=false;$('st').className='err'}},1500)};
-function show(id,s){const ok=s.movies.filter(m=>m.matched),bad=s.movies.filter(m=>!m.matched);
- let h=`<div class="card"><b>${ok.length} películas encontradas</b>
- <div class="actions"><a class="btn" href="/files/${id}/movies.csv">Descargar CSV para Letterboxd</a>
- <a class="btn alt" target="_blank" rel="noopener" href="https://letterboxd.com/list/new/">Abrir Letterboxd → Import</a>
- <a class="btn alt" href="/files/${id}/movies.md">Markdown</a><a class="btn alt" href="/files/${id}/transcript.txt">Transcripción</a></div>
- <table><tr><th>Película</th><th>Año</th><th>IMDb</th><th>Letterboxd</th><th class="hide-s">Mencionada como</th></tr>`;
- for(const m of ok)h+=`<tr><td><b>${esc(m.title)}</b></td><td>${m.year||''}</td>
-  <td>${m.imdb_id?`<a class="imdb" target="_blank" rel="noopener" href="${m.imdb_url}">${m.imdb_id}</a>`:'—'}</td>
-  <td>${m.imdb_id?`<a target="_blank" rel="noopener" href="${m.letterboxd_url}">ver</a>`:'—'}</td><td class="hide-s mute">${esc(m.mentioned_as)}</td></tr>`;
- h+='</table>';
- if(bad.length)h+=`<h3>Sin identificar</h3><ul>${bad.map(m=>`<li>${esc(m.mentioned_as||m.title)} <span class="mute">— ${esc(m.context)}</span></li>`).join('')}</ul>`;
- $('res').innerHTML=h+'</div>'}
-</script></html>"""
 
 if __name__ == "__main__":
     app.run(host=os.environ.get("HOST", "127.0.0.1"), port=int(os.environ.get("PORT", 5000)))

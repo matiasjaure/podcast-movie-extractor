@@ -149,8 +149,49 @@ class Tmdb:
                 return results[0]
         return None
 
-    def imdb_id(self, tmdb_id: int) -> str | None:
-        return self.get(f"/movie/{tmdb_id}/external_ids").get("imdb_id") or None
+    def details(self, tmdb_id: int) -> dict:
+        """Full movie record (Spanish where available) with credits, IMDb id and trailers."""
+        return self.get(f"/movie/{tmdb_id}", language="es-ES", include_video_language="es,en,null",
+                        append_to_response="credits,external_ids,videos")
+
+
+IMG = "https://image.tmdb.org/t/p"
+
+
+def _trailer(videos: list[dict]) -> str:
+    yt = [v for v in videos if v.get("site") == "YouTube" and v.get("type") in ("Trailer", "Teaser")]
+    yt.sort(key=lambda v: (v.get("type") != "Trailer", not v.get("official"), v.get("iso_639_1") != "es"))
+    return f"https://www.youtube.com/watch?v={yt[0]['key']}" if yt else ""
+
+
+def movie_from_tmdb(d: dict, mentioned: str = "", context: str = "") -> "Movie":
+    crew = d.get("credits", {}).get("crew", [])
+    cast = d.get("credits", {}).get("cast", [])
+    date = d.get("release_date") or ""
+    return Movie(
+        title=d.get("title") or d.get("original_title") or mentioned,
+        original_title=d.get("original_title", ""),
+        year=int(date[:4]) if date[:4].isdigit() else None,
+        tmdb_id=d.get("id"),
+        imdb_id=(d.get("external_ids") or {}).get("imdb_id") or d.get("imdb_id") or None,
+        mentioned_as=mentioned,
+        context=context,
+        release_date=date,
+        runtime=d.get("runtime") or None,
+        genres=[g["name"] for g in d.get("genres", [])],
+        overview=d.get("overview") or "",
+        tagline=d.get("tagline") or "",
+        directors=[c["name"] for c in crew if c.get("job") == "Director"],
+        writers=list(dict.fromkeys(c["name"] for c in crew if c.get("department") == "Writing"))[:4],
+        cast=[c["name"] for c in cast[:8]],
+        countries=[c["name"] for c in d.get("production_countries", [])],
+        original_language=d.get("original_language") or "",
+        rating=round(d["vote_average"], 1) if d.get("vote_average") else None,
+        vote_count=d.get("vote_count") or 0,
+        poster_url=f"{IMG}/w342{d['poster_path']}" if d.get("poster_path") else "",
+        backdrop_url=f"{IMG}/w780{d['backdrop_path']}" if d.get("backdrop_path") else "",
+        trailer_url=_trailer((d.get("videos") or {}).get("results", [])),
+    )
 
 
 @dataclass
@@ -162,7 +203,22 @@ class Movie:
     mentioned_as: str = ""
     context: str = ""
     matched: bool = True
-    original_title: str = field(default="")
+    original_title: str = ""
+    release_date: str = ""
+    runtime: int | None = None
+    genres: list[str] = field(default_factory=list)
+    overview: str = ""
+    tagline: str = ""
+    directors: list[str] = field(default_factory=list)
+    writers: list[str] = field(default_factory=list)
+    cast: list[str] = field(default_factory=list)
+    countries: list[str] = field(default_factory=list)
+    original_language: str = ""
+    rating: float | None = None
+    vote_count: int = 0
+    poster_url: str = ""
+    backdrop_url: str = ""
+    trailer_url: str = ""
 
     @property
     def imdb_url(self):
@@ -172,6 +228,14 @@ class Movie:
     def letterboxd_url(self):
         # letterboxd.com/imdb/<id> redirects to the film page
         return f"https://letterboxd.com/imdb/{self.imdb_id}/" if self.imdb_id else ""
+
+    @property
+    def tmdb_url(self):
+        return f"https://www.themoviedb.org/movie/{self.tmdb_id}" if self.tmdb_id else ""
+
+    def to_dict(self) -> dict:
+        return asdict(self) | {"imdb_url": self.imdb_url, "letterboxd_url": self.letterboxd_url,
+                               "tmdb_url": self.tmdb_url}
 
 
 def resolve(items: list[dict], tmdb: Tmdb, progress=lambda msg: None) -> list[Movie]:
@@ -192,13 +256,7 @@ def resolve(items: list[dict], tmdb: Tmdb, progress=lambda msg: None) -> list[Mo
         if hit["id"] in seen:
             continue
         seen.add(hit["id"])
-        movies.append(Movie(
-            title=hit.get("title") or hit.get("original_title"),
-            original_title=hit.get("original_title", ""),
-            year=int(hit["release_date"][:4]) if hit.get("release_date") else year,
-            tmdb_id=hit["id"], imdb_id=tmdb.imdb_id(hit["id"]),
-            mentioned_as=mentioned, context=it.get("context") or "",
-        ))
+        movies.append(movie_from_tmdb(tmdb.details(hit["id"]), mentioned, it.get("context") or ""))
     return sorted(movies, key=lambda m: (not m.matched, m.title.casefold()))
 
 
@@ -208,12 +266,14 @@ def write_outputs(movies: list[Movie], out: Path, name: str):
     bad = [m for m in movies if not m.matched]
 
     md = [f"# Películas de «{name}»", "", f"{len(ok)} películas encontradas.", "",
-          "| # | Película | Año | IMDb | Letterboxd | Mencionada como |", "|---|---|---|---|---|---|"]
+          "| # | Película | Año | Dirección | Géneros | IMDb | Letterboxd | Mencionada como |",
+          "|---|---|---|---|---|---|---|---|"]
     for i, m in enumerate(ok, 1):
         title = m.title if m.title == m.original_title or not m.original_title else f"{m.title} ({m.original_title})"
         imdb = f"[{m.imdb_id}]({m.imdb_url})" if m.imdb_id else "—"
         lb = f"[ver]({m.letterboxd_url})" if m.imdb_id else "—"
-        md.append(f"| {i} | **{title}** | {m.year or ''} | {imdb} | {lb} | {m.mentioned_as} |")
+        md.append(f"| {i} | **{title}** | {m.year or ''} | {', '.join(m.directors)} | {', '.join(m.genres)} "
+                  f"| {imdb} | {lb} | {m.mentioned_as} |")
     if bad:
         md += ["", "## Sin identificar (revisar a mano)", ""]
         md += [f"- {m.mentioned_as or m.title} — _{m.context}_" for m in bad]
@@ -226,7 +286,7 @@ def write_outputs(movies: list[Movie], out: Path, name: str):
         for m in ok:
             w.writerow([m.title, m.year or "", m.imdb_id or "", m.tmdb_id or ""])
 
-    (out / "movies.json").write_text(json.dumps([asdict(m) for m in movies], ensure_ascii=False, indent=2),
+    (out / "movies.json").write_text(json.dumps([m.to_dict() for m in movies], ensure_ascii=False, indent=2),
                                      encoding="utf-8")
 
 

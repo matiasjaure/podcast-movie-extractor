@@ -5,6 +5,8 @@
   "main": "worker/index.ts",
   "compatibility_date": "2026-11-01",
   "observability": { "enabled": true },
+  // static/index.html is bundled into the Worker as a text module.
+  "rules": [{ "type": "Text", "globs": ["**/*.html"], "fallthrough": true }],
   "containers": [
     {
       "name": "podcast-movie-extractor-app",

@@ -1,7 +1,11 @@
 # 🎬 Podcast → Películas
 
 Website that takes a Spanish podcast (**.mp3**, .m4a, .wav…), transcribes it, finds every movie mentioned
-(Spanish or English titles) and gives you a list with **IMDb** and **Letterboxd** links plus a CSV you can import as a Letterboxd list.
+(Spanish or English titles) and shows each one with poster, synopsis, director, writers, cast, genres, runtime,
+TMDB rating, trailer and **IMDb** / **Letterboxd** / TMDB links.
+
+Results can be **saved as named lists** ("Mis listas"), reopened later, renamed, merged (add a new episode's movies to an
+existing list, without duplicates), edited (remove movies) and exported as a CSV you can import into Letterboxd.
 
 ```
 audio ──faster-whisper (es)──▶ transcript ──Claude──▶ titles ──TMDB──▶ IMDb ids ──▶ table · movies.csv · movies.md
@@ -51,6 +55,15 @@ The app listens on `$PORT`; health check: `/healthz`.
 
 > ⚠️ The site has no login. If it is public and the keys are set on the server, anyone with the URL can spend your
 > Anthropic credits. Either keep the URL private, or leave the keys unset on the server so each visitor enters their own in the form.
+
+## Saved lists
+| Where it runs | Storage |
+|---|---|
+| Cloudflare | SQLite inside the Worker's Durable Object (`worker/index.ts`). Browsing lists never wakes the container. |
+| Local / Docker | SQLite file `data/lists.db` (`DATA_DIR` to move it; mount it as a volume in Docker). |
+
+API (same on both): `GET/POST /api/lists`, `GET/PUT/DELETE /api/lists/<id>`. A list is `{name, source, movies[]}`;
+each movie keeps the full details, so saved lists don't need TMDB to be displayed again.
 
 ## Letterboxd
 Letterboxd's API is invite-only, so lists can't be created automatically. After processing, click

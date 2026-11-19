@@ -6,6 +6,7 @@ services:
       - "5000:5000"
     volumes:
       - ./out:/app/out
+      - ./data:/app/data        # saved lists
       - models:/models
 volumes:
   models:

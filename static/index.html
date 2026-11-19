@@ -1,0 +1,297 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Podcast → Películas</title>
+<style>
+:root{--bg:#14181c;--card:#1f252b;--card2:#283038;--fg:#e8ecef;--mute:#8a96a0;--line:#8883;--acc:#00c030;--acc-fg:#04130a;--imdb:#f5c518;--err:#ff6b6b;--chip:#2c3440}
+@media(prefers-color-scheme:light){:root{--bg:#f4f5f7;--card:#fff;--card2:#eef1f4;--fg:#1a1d21;--mute:#5d6873;--acc:#00a028;--acc-fg:#fff;--imdb:#9a7400;--chip:#e6eaee;--err:#c62828}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif}
+main{max-width:980px;margin:0 auto;padding:20px 16px 60px}
+a{color:var(--acc)}
+header{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:18px}
+header h1{margin:0;font-size:22px}
+nav{display:flex;gap:6px}
+nav a{padding:7px 14px;border-radius:999px;text-decoration:none;color:var(--fg);background:var(--card)}
+nav a.on{background:var(--acc);color:var(--acc-fg);font-weight:600}
+.card{background:var(--card);border-radius:12px;padding:18px;margin-bottom:16px}
+.mute{color:var(--mute)} .err{color:var(--err)} .small{font-size:13px}
+.drop{border:2px dashed var(--mute);border-radius:10px;padding:26px;text-align:center;cursor:pointer}
+.drop.over{border-color:var(--acc)}
+label{display:block;margin:12px 0 4px;color:var(--mute);font-size:13px}
+input[type=text],input[type=password],select{width:100%;padding:9px;border-radius:8px;border:1px solid var(--line);background:var(--card2);color:inherit;font:inherit}
+button,.btn{background:var(--acc);color:var(--acc-fg);border:0;border-radius:8px;padding:9px 16px;font:inherit;font-weight:600;cursor:pointer;text-decoration:none;display:inline-block}
+.btn.alt,button.alt{background:transparent;color:var(--fg);border:1px solid var(--line)}
+button.danger{background:transparent;color:var(--err);border:1px solid var(--err)}
+button:disabled{opacity:.5;cursor:default}
+.row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+.row>input,.row>select{flex:1;min-width:160px;width:auto}
+details{margin-top:12px;color:var(--mute)}
+.movie{display:grid;grid-template-columns:120px 1fr;gap:16px;background:var(--card);border-radius:12px;padding:14px;margin-bottom:12px;position:relative}
+.movie img,.movie .noposter{width:120px;aspect-ratio:2/3;object-fit:cover;border-radius:8px;background:var(--card2)}
+.movie .noposter{display:flex;align-items:center;justify-content:center;font-size:34px}
+.movie h3{margin:0;font-size:18px;padding-right:30px}
+.movie .orig{color:var(--mute);font-size:13px}
+.meta{color:var(--mute);font-size:13px;margin:4px 0}
+.rating{color:var(--imdb);font-weight:600}
+.chips{display:flex;gap:6px;flex-wrap:wrap;margin:6px 0}
+.chip{background:var(--chip);border-radius:999px;padding:2px 10px;font-size:12px}
+.overview{margin:8px 0}
+.tagline{font-style:italic;color:var(--mute);margin:4px 0}
+dl{display:grid;grid-template-columns:auto 1fr;gap:2px 10px;margin:8px 0;font-size:13px}
+dt{color:var(--mute)} dd{margin:0}
+.mention{border-left:3px solid var(--acc);padding:4px 10px;font-size:13px;color:var(--mute);margin:8px 0}
+.links{display:flex;gap:12px;flex-wrap:wrap;font-size:14px;font-weight:600}
+.links a.imdb{color:var(--imdb)}
+.x{position:absolute;top:10px;right:10px;background:transparent;color:var(--mute);border:0;font-size:20px;padding:2px 8px}
+.lists{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:12px}
+.listcard{background:var(--card);border-radius:12px;padding:14px;text-decoration:none;color:var(--fg);display:block}
+.listcard .posters{display:flex;gap:4px;margin-bottom:10px;height:72px;overflow:hidden}
+.listcard .posters img{height:72px;aspect-ratio:2/3;object-fit:cover;border-radius:4px}
+.listcard b{display:block}
+.toolbar{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:12px 0}
+.toolbar input{flex:1;min-width:180px}
+h2{font-size:18px;margin:4px 0 12px}
+@media(max-width:560px){.movie{grid-template-columns:84px 1fr;gap:12px}.movie img,.movie .noposter{width:84px}}
+</style>
+</head>
+<body>
+<main>
+<header>
+  <h1>🎬 Podcast → Películas</h1>
+  <nav><a href="#/" id="nav-new">Analizar</a><a href="#/lists" id="nav-lists">Mis listas</a></nav>
+</header>
+<div id="view"></div>
+</main>
+
+<template id="tpl-new">
+  <p class="mute">Sube un podcast en español (.mp3, .m4a…) y obtén las películas que se mencionan, con toda su información.</p>
+  <form id="f" class="card">
+    <div class="drop" id="drop">Arrastra el audio aquí o haz clic<br><span class="mute" id="fname"></span>
+      <input type="file" id="file" name="file" accept=".mp3,.m4a,.wav,.ogg,.flac,audio/*,.txt" hidden></div>
+    <label for="model">Modelo de transcripción</label>
+    <select name="model" id="model">
+      <option value="small">small (rápido)</option>
+      <option value="medium" selected>medium (recomendado)</option>
+      <option value="large-v3">large-v3 (más preciso, lento)</option>
+    </select>
+    <details id="keys"><summary>Claves API</summary>
+      <label for="ak">ANTHROPIC_API_KEY</label><input type="password" id="ak" name="anthropic_api_key" autocomplete="off">
+      <label for="tk">TMDB_API_KEY</label><input type="password" id="tk" name="tmdb_api_key" autocomplete="off">
+    </details>
+    <p class="row"><button id="go">Procesar</button> <span id="st" class="mute"></span></p>
+  </form>
+  <section id="res"></section>
+</template>
+
+<script>
+const $ = (sel, root = document) => root.querySelector(sel);
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+// Only https links/images are rendered, so a crafted saved list can't inject javascript: URLs.
+const safeUrl = u => { try { const x = new URL(u); return x.protocol === "https:" ? x.href : ""; } catch { return ""; } };
+const api = async (path, opts = {}) => {
+  const r = await fetch(path, {headers: opts.body && typeof opts.body === "string" ? {"Content-Type": "application/json"} : {}, ...opts});
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(data.error || `Error ${r.status}`);
+  return data;
+};
+const fmtDate = iso => iso ? new Date(iso).toLocaleDateString("es", {day: "numeric", month: "short", year: "numeric"}) : "";
+const hm = min => min ? `${Math.floor(min / 60)} h ${min % 60} min` : "";
+
+let lastResult = null; // {name, movies, jobId}
+
+// ---------- movie rendering
+function movieCard(m, {removable = false, index = 0} = {}) {
+  const poster = safeUrl(m.poster_url);
+  const title = esc(m.title);
+  const orig = m.original_title && m.original_title !== m.title ? `<div class="orig">${esc(m.original_title)}</div>` : "";
+  const meta = [m.year, hm(m.runtime), (m.countries || []).join(", "), m.original_language && m.original_language.toUpperCase()].filter(Boolean).map(esc).join(" · ");
+  const rating = m.rating ? `<span class="rating">★ ${esc(m.rating)}</span> <span class="small mute">(${esc(Number(m.vote_count || 0).toLocaleString("es"))} votos TMDB)</span>` : "";
+  const genres = (m.genres || []).map(g => `<span class="chip">${esc(g)}</span>`).join("");
+  const rows = [["Dirección", m.directors], ["Guion", m.writers], ["Reparto", m.cast], ["Estreno", m.release_date ? [fmtDate(m.release_date)] : []]]
+    .filter(([, v]) => v && v.length).map(([k, v]) => `<dt>${k}</dt><dd>${esc(v.join(", "))}</dd>`).join("");
+  const mention = m.mentioned_as || m.context
+    ? `<div class="mention">En el podcast: <b>${esc(m.mentioned_as)}</b>${m.context ? ` — ${esc(m.context)}` : ""}</div>` : "";
+  const links = [
+    [safeUrl(m.imdb_url), "IMDb", "imdb"], [safeUrl(m.letterboxd_url), "Letterboxd", ""],
+    [safeUrl(m.tmdb_url), "TMDB", ""], [safeUrl(m.trailer_url), "▶ Tráiler", ""],
+  ].filter(([u]) => u).map(([u, t, c]) => `<a class="${c}" href="${esc(u)}" target="_blank" rel="noopener">${t}</a>`).join("");
+  return `<article class="movie">
+    ${poster ? `<img src="${esc(poster)}" alt="Póster de ${title}" loading="lazy">` : `<div class="noposter">🎞️</div>`}
+    <div>
+      <h3>${title}</h3>${orig}
+      <div class="meta">${meta}</div>
+      ${rating}
+      <div class="chips">${genres}</div>
+      ${m.tagline ? `<div class="tagline">${esc(m.tagline)}</div>` : ""}
+      ${m.overview ? `<div class="overview">${esc(m.overview)}</div>` : ""}
+      ${rows ? `<dl>${rows}</dl>` : ""}
+      ${mention}
+      <div class="links">${links}</div>
+    </div>
+    ${removable ? `<button class="x" title="Quitar de la lista" data-remove="${index}">×</button>` : ""}
+  </article>`;
+}
+
+function moviesHtml(movies, opts = {}) {
+  const ok = movies.map((m, i) => [m, i]).filter(([m]) => m.matched !== false);
+  const bad = movies.filter(m => m.matched === false);
+  let h = ok.map(([m, i]) => movieCard(m, {...opts, index: i})).join("") || `<p class="mute">No se encontraron películas.</p>`;
+  if (bad.length) h += `<div class="card"><h2>Sin identificar</h2><ul>${bad.map(m => `<li>${esc(m.mentioned_as || m.title)} <span class="mute">— ${esc(m.context)}</span></li>`).join("")}</ul></div>`;
+  return h;
+}
+
+function csvFor(movies) {
+  const q = v => `"${String(v ?? "").replace(/"/g, '""')}"`;
+  const rows = movies.filter(m => m.matched !== false).map(m => [m.title, m.year || "", m.imdb_id || "", m.tmdb_id || ""].map(q).join(","));
+  return ["Title,Year,imdbID,tmdbID", ...rows].join("\n");
+}
+function download(name, text) {
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob([text], {type: "text/csv;charset=utf-8"}));
+  a.download = name; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+}
+const slug = s => (s || "lista").normalize("NFD").replace(/[^\w-]+/g, "-").replace(/^-+|-+$/g, "").toLowerCase() || "lista";
+
+// ---------- views
+const view = $("#view");
+
+async function showNew() {
+  view.replaceChildren($("#tpl-new").content.cloneNode(true));
+  try { const cfg = await api("/api/config"); $("#keys").hidden = cfg.keys_on_server; $("#keys").open = !cfg.keys_on_server; } catch {}
+  const file = $("#file"), drop = $("#drop");
+  drop.onclick = () => file.click();
+  file.onchange = () => $("#fname").textContent = file.files[0]?.name || "";
+  ["dragover", "dragleave", "drop"].forEach(e => drop.addEventListener(e, ev => {
+    ev.preventDefault(); drop.classList.toggle("over", e === "dragover");
+    if (e === "drop") { file.files = ev.dataTransfer.files; file.onchange(); }
+  }));
+  $("#f").onsubmit = submitJob;
+  if (lastResult) renderResult();
+}
+
+async function submitJob(ev) {
+  ev.preventDefault();
+  const st = $("#st"), go = $("#go");
+  if (!$("#file").files.length) { st.className = "err"; st.textContent = "Elige un archivo primero"; return; }
+  $("#res").innerHTML = ""; lastResult = null; go.disabled = true; st.className = "mute"; st.textContent = "Subiendo…";
+  let job;
+  try { job = await api("/api/jobs", {method: "POST", body: new FormData($("#f"))}); }
+  catch (e) { st.className = "err"; st.textContent = e.message; go.disabled = false; return; }
+  const poll = async () => {
+    let s;
+    try { s = await api(`/api/jobs/${job.id}`); } catch (e) { s = {state: "running", status: "Reconectando…"}; }
+    if (!document.body.contains(st)) return; // user navigated away
+    st.textContent = s.status;
+    if (s.state === "running") return setTimeout(poll, 1500);
+    go.disabled = false;
+    if (s.state === "error") { st.className = "err"; return; }
+    lastResult = {name: s.name, movies: s.movies, jobId: job.id};
+    renderResult();
+  };
+  poll();
+}
+
+async function renderResult() {
+  const r = lastResult, res = $("#res");
+  let lists = [];
+  try { lists = (await api("/api/lists")).lists; } catch {}
+  const n = r.movies.filter(m => m.matched !== false).length;
+  res.innerHTML = `<div class="card">
+      <h2>${n} película${n === 1 ? "" : "s"} encontrada${n === 1 ? "" : "s"}</h2>
+      <div class="row">
+        <select id="dest"><option value="">➕ Nueva lista</option>${lists.map(l => `<option value="${esc(l.id)}">Añadir a «${esc(l.name)}» (${l.count})</option>`).join("")}</select>
+        <input type="text" id="lname" maxlength="120" value="${esc(r.name)}" placeholder="Nombre de la lista">
+        <button id="save">Guardar lista</button>
+      </div>
+      <p class="row small" style="margin-top:12px">
+        <button class="alt" id="csv">CSV para Letterboxd</button>
+        ${r.jobId ? `<a class="btn alt" href="/files/${esc(r.jobId)}/transcript.txt">Transcripción</a>` : ""}
+        <span id="savest" class="mute"></span>
+      </p>
+    </div>${moviesHtml(r.movies)}`;
+  $("#dest").onchange = () => $("#lname").hidden = !!$("#dest").value;
+  $("#csv").onclick = () => download(`${slug(r.name)}.csv`, csvFor(r.movies));
+  $("#save").onclick = async () => {
+    const savest = $("#savest"), dest = $("#dest").value;
+    $("#save").disabled = true;
+    try {
+      let id = dest;
+      if (dest) {
+        const cur = await api(`/api/lists/${dest}`);
+        const have = new Set(cur.movies.map(m => m.tmdb_id || m.title));
+        const merged = cur.movies.concat(r.movies.filter(m => !have.has(m.tmdb_id || m.title)));
+        await api(`/api/lists/${dest}`, {method: "PUT", body: JSON.stringify({movies: merged})});
+      } else {
+        id = (await api("/api/lists", {method: "POST", body: JSON.stringify({name: $("#lname").value.trim() || r.name, source: r.name, movies: r.movies})})).id;
+      }
+      location.hash = `#/lists/${id}`;
+    } catch (e) { savest.className = "err"; savest.textContent = e.message; $("#save").disabled = false; }
+  };
+}
+
+async function showLists() {
+  view.innerHTML = `<p class="mute">Cargando…</p>`;
+  try {
+    const {lists} = await api("/api/lists");
+    view.innerHTML = lists.length
+      ? `<h2>Mis listas</h2><div class="lists">${lists.map(l => `<a class="listcard" href="#/lists/${esc(l.id)}">
+          <div class="posters">${(l.posters || []).map(p => safeUrl(p)).filter(Boolean).map(p => `<img src="${esc(p)}" alt="" loading="lazy">`).join("")}</div>
+          <b>${esc(l.name)}</b><span class="small mute">${l.count} películas · ${fmtDate(l.updated_at)}</span></a>`).join("")}</div>`
+      : `<div class="card"><p>Todavía no hay listas guardadas.</p><a class="btn" href="#/">Analizar un podcast</a></div>`;
+  } catch (e) { view.innerHTML = `<p class="err">${esc(e.message)}</p>`; }
+}
+
+async function showList(id) {
+  view.innerHTML = `<p class="mute">Cargando…</p>`;
+  let list;
+  try { list = await api(`/api/lists/${encodeURIComponent(id)}`); }
+  catch (e) { view.innerHTML = `<p class="err">${esc(e.message)}</p><a href="#/lists">← Mis listas</a>`; return; }
+  const save = async patch => { await api(`/api/lists/${encodeURIComponent(id)}`, {method: "PUT", body: JSON.stringify(patch)}); };
+  const render = () => {
+    const n = list.movies.filter(m => m.matched !== false).length;
+    view.innerHTML = `<p><a href="#/lists">← Mis listas</a></p>
+      <div class="card">
+        <div class="toolbar"><input type="text" id="name" maxlength="120" value="${esc(list.name)}" aria-label="Nombre de la lista"><button class="alt" id="rename">Renombrar</button></div>
+        <p class="small mute">${n} películas${list.source ? ` · de «${esc(list.source)}»` : ""} · creada ${fmtDate(list.created_at)} · actualizada ${fmtDate(list.updated_at)}</p>
+        <div class="toolbar">
+          <button id="csv">CSV para Letterboxd</button>
+          <a class="btn alt" href="https://letterboxd.com/list/new/" target="_blank" rel="noopener">Letterboxd → Import</a>
+          <button class="danger" id="del">Borrar lista</button>
+          <span id="st" class="small mute"></span>
+        </div>
+      </div>${moviesHtml(list.movies, {removable: true})}`;
+    $("#csv").onclick = () => download(`${slug(list.name)}.csv`, csvFor(list.movies));
+    $("#rename").onclick = async () => {
+      const name = $("#name").value.trim(); if (!name) return;
+      try { await save({name}); list.name = name; $("#st").textContent = "Guardado"; } catch (e) { $("#st").textContent = e.message; }
+    };
+    $("#del").onclick = async () => {
+      const b = $("#del");
+      if (b.dataset.confirm !== "1") { b.dataset.confirm = "1"; b.textContent = "¿Seguro? Pulsa otra vez"; return; }
+      try { await api(`/api/lists/${encodeURIComponent(id)}`, {method: "DELETE"}); location.hash = "#/lists"; } catch (e) { $("#st").textContent = e.message; }
+    };
+    view.querySelectorAll("[data-remove]").forEach(b => b.onclick = async () => {
+      const movies = list.movies.filter((_, i) => i !== Number(b.dataset.remove));
+      try { await save({movies}); list.movies = movies; render(); } catch (e) { $("#st").textContent = e.message; }
+    });
+  };
+  render();
+}
+
+function route() {
+  const h = location.hash.replace(/^#/, "") || "/";
+  const m = h.match(/^\/lists\/([\w-]+)$/);
+  $("#nav-new").classList.toggle("on", !h.startsWith("/lists"));
+  $("#nav-lists").classList.toggle("on", h.startsWith("/lists"));
+  if (m) return showList(m[1]);
+  if (h === "/lists") return showLists();
+  return showNew();
+}
+addEventListener("hashchange", route);
+route();
+</script>
+</body>
+</html>
