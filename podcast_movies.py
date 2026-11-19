@@ -38,7 +38,7 @@ def _load_dotenv() -> None:
 
 
 _load_dotenv()
-EXTRACT_MODEL = os.environ.get("EXTRACT_MODEL", "claude-sonnet-5-5")
+EXTRACT_MODEL = os.environ.get("EXTRACT_MODEL", "claude-haiku-5-5")
 CHUNK_CHARS = 30_000
 
 EXTRACT_PROMPT = """Este es un fragmento de la transcripción automática de un podcast en español.
@@ -107,11 +107,16 @@ def extract_movies(transcript: str, progress=lambda msg: None, api_key: str | No
     parts = list(chunks(transcript))
     for i, part in enumerate(parts, 1):
         progress(f"Buscando películas en el texto… {i}/{len(parts)}")
+        # Thinking is on by default and shares max_tokens with the answer, so leave plenty of room.
         msg = client.messages.create(
             model=EXTRACT_MODEL,
-            max_tokens=4096,
+            max_tokens=16000,
             messages=[{"role": "user", "content": f"{EXTRACT_PROMPT}\n\n<transcripcion>\n{part}\n</transcripcion>"}],
         )
+        if msg.stop_reason == "max_tokens":
+            raise RuntimeError(f"La respuesta del modelo se cortó (fragmento {i}/{len(parts)})")
+        if msg.stop_reason == "refusal":
+            raise RuntimeError(f"El modelo rechazó el fragmento {i}/{len(parts)}")
         for item in parse_json_array("".join(b.text for b in msg.content if b.type == "text")):
             name = item.get("title_original") or item.get("title_mentioned")
             if name:

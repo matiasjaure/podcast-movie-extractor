@@ -14,6 +14,8 @@ os.environ.update(ANTHROPIC_API_KEY="test", TMDB_API_KEY="test", DATA_DIR=tempfi
 import app as web  # noqa: E402
 import podcast_movies as pm  # noqa: E402
 
+EXTRACT = pm.extract_movies  # the real one, before tests stub it
+
 
 DETAILS = {
     "id": 129, "title": "El viaje de Chihiro", "original_title": "千と千尋の神隠し", "release_date": "2001-07-20",
@@ -100,6 +102,33 @@ class AppTest(unittest.TestCase):
         self.assertEqual(self.client.post("/api/lists", json={"name": "x", "movies": "nope"}).status_code, 400)
         self.assertEqual(self.client.post("/api/lists", json={"name": "x" * 121, "movies": []}).status_code, 400)
         self.assertEqual(self.client.put("/api/lists/missing", json={"name": "x"}).status_code, 404)
+
+    def test_extract_uses_haiku_and_reports_truncation(self):
+        import anthropic
+        from types import SimpleNamespace as NS
+        calls = []
+
+        class FakeClient:
+            def __init__(self, api_key=None):
+                self.messages = self
+
+            def create(self, **kw):
+                calls.append(kw)
+                text = '[{"title_original": "Coco", "title_mentioned": "Coco", "year": 2017, "context": "c"}]'
+                return NS(stop_reason=self.stop, content=[NS(type="text", text=text)])
+
+        real_extract, real_client = EXTRACT, anthropic.Anthropic
+        anthropic.Anthropic = FakeClient
+        try:
+            FakeClient.stop = "end_turn"
+            self.assertEqual(real_extract("hablamos de Coco")[0]["title_original"], "Coco")
+            self.assertEqual(calls[0]["model"], "claude-haiku-5-5")
+            self.assertGreaterEqual(calls[0]["max_tokens"], 16000)
+            FakeClient.stop = "max_tokens"
+            with self.assertRaisesRegex(RuntimeError, "se cortó"):
+                real_extract("hablamos de Coco")
+        finally:
+            anthropic.Anthropic = real_client
 
     def test_config(self):
         self.assertEqual(self.client.get("/api/config").get_json(), {"keys_on_server": True})
